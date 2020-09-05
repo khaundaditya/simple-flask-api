@@ -2,25 +2,20 @@ from flask import Flask, jsonify
 from flask import request
 from flask import abort
 from flask import make_response
+from flask_ngrok import run_with_ngrok
+from flask import Response
+import json
 
 app = Flask(__name__)
+run_with_ngrok(app)  # Start ngrok when app is run
 
+# Accounts data structure to be database table if persistence is desired
 accounts = [
     {
-        'id': '1234',
-        'balance': 100,
-    },
-    {
-        'id': '3456',
-        'balance': 50
+        'id':'124',
+        'balance':100,
     }
 ]
-
-"""
-
-View Code 
-
-""""
 
 @app.route('/')
 def index():
@@ -36,13 +31,19 @@ def get_balance():
     args = request.args
     if 'account_id' in args:
         account_id = args['account_id']
-        print(account_id)
         account = _get_account_by_id(account_id)
-        print(account)
         if len(account) == 0:
-            abort(404)
-        return jsonify(0), 200
+            val = '404 0'
+            return Response('0', status=404, mimetype='application/json')
+        #return(jsonify(200, account[0]['balance']))
+        val = str(account[0]['balance'])
+        return Response(str(account[0]['balance']), status=200, mimetype='application/json')
 
+
+@app.route('/reset', methods=['POST'])
+def reset():
+    accounts = None
+    return "OK"
 
 @app.route('/event', methods=['POST'])
 def post():
@@ -58,28 +59,35 @@ def post():
         account = _get_account_by_id(account_id)
         if ( len(account) > 0 ):
             # Deposit to existing account
-            print("Reached Here")
-            return jsonify(({'destination': _update_account(account_id, amount, 'deposit') }))
+            upd_acct = _update_account(account_id, amount,'deposit')
+            s = '{ \"destination\" : ' +  upd_acct +'}'
+            return Response(str(s), status=201, mimetype='application/json')
+                        
+            #return jsonify(({'destination': _update_account(account_id, amount, 'deposit') }))
         else:
             new_account = {
-                'id': account_id,
-                'balance': int(amount)
+                'id':account_id,
+                'balance':int(amount)
             }
             accounts.append(
                 new_account
             )
-            return jsonify(201, ({'destination': new_account }))
+            s = '{ \"destination\" : ' +  json.dumps(new_account,  separators=(",", ":")) +'}'
+            val =  str(s)
+            return Response(val, status=201, mimetype='application/json')
     elif action_type == 'withdraw':
-        account_id = data['destination']
+        account_id = data['origin']
         amount  = data['amount']
         if not account_id or not amount:
             abort(404)
         account = _get_account_by_id(account_id)
         if len(account) > 0:
             data = _update_account(account_id, amount, 'withdraw')
-            return jsonify(201,({ 'destination': dict(destination) }))
+            s = '{ \"origin\" : ' +  data +'}'
+            return Response(str(s), status=201, mimetype='application/json')
         else:
-            abort(404)
+            val = ' 0'
+            return Response(val, status=404, mimetype='application/json')
     elif action_type == 'transfer':
         origin = data['origin']
         destination = data['destination']
@@ -88,11 +96,15 @@ def post():
             abort(400)
         account = _get_account_by_id(origin)
         if len(account) > 0 :
-           origin, destination = _handle_money_transfer(origin, destination, amount)
-           return jsonify(201,({'origin': dict(origin), 'destination': dict(destination) }))
+           llist = _handle_money_transfer(origin, destination, amount)
+           origin_json = json.dumps(llist[0], separators=(",", ":")),
+           dest_json = json.dumps(llist[1], separators=(",", ":"))
+           s =  '{ \"origin\" : ' +  str(origin_json[0]) + ', \"destination\": '+ str(dest_json) + '}'
+           return Response(str(s), status=201, mimetype='application/json')
 
         else:
-            abort(404)
+            val = ' 0'
+            return Response(val, status=404, mimetype='application/json')
 
     return jsonify({'S': 'Failure'})
 
@@ -119,7 +131,6 @@ CRUD Functions
 """
 
 def _get_account_by_id(id):
-     print(id)
      account = [account for account in accounts if account['id'] == str(id)]
      return account
 
@@ -128,30 +139,52 @@ def _update_account(id, amount, action):
     if action == 'deposit':
         cur_balance = account[0]['balance']
         account[0]['balance'] = cur_balance + int(amount)
-        return account[0]
+        new = {
+            'id':  account[0]['id'],
+            'balance': account[0]['balance']
+        }
+        return json.dumps(new, separators=(",", ":"))
     elif action == 'withdraw':
         cur_balance = account[0]['balance']
         if cur_balance < amount:
             abort(500)
         else:
             account[0]['balance'] = cur_balance - int(amount)
-            return account[0]
+            new = {
+                'id':  account[0]['id'],
+                'balance': account[0]['balance']
+            }
+            return json.dumps(new, separators=(",", ":"))
 
 def _handle_money_transfer(origin, destination, amount):
     origin_account = _get_account_by_id(origin)
     origin_cur_balance = origin_account[0]['balance']
     # Check for sufficient balance in origin account
-    if origin_cur_balance < amount:
-        abort(500)    
-    else:
+    if amount <= origin_cur_balance:
         origin_account[0]['balance'] = origin_cur_balance - amount
-    destination_account = _get_account_by_id(destination)
-    if ( len(destination_account) > 0 ):
-        destination_cur_balance = destination_account[0]['balance']
-        destination_account[0]['balance'] = destination_cur_balance + amount
-        return ( origin_account[0], destination_account[0])
     else:
-        abort(404)
+        abort(500)
+    destination_account = _get_account_by_id(destination)
+    if len(destination_account) <= 0:
+        #destination account doesn't exist create it
+        new_dest_account = {
+            'id': destination,
+            'balance': 0
+        }
+        accounts.append(new_dest_account)
+    # fetch destination account again
+    destination_account = _get_account_by_id(destination)
+    destination_cur_balance = destination_account[0]['balance']
+    destination_account[0]['balance'] = destination_cur_balance + amount
+    orig_dict = {
+        'id': origin_account[0]['id'],
+        'balance': origin_account[0]['balance']
+    }
+    dest_dict = {
+        'id': destination_account[0]['id'],
+        'balance': destination_account[0]['balance']
+    }
+    return [orig_dict, dest_dict]
 
 
 
